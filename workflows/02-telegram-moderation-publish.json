@@ -1,0 +1,305 @@
+{
+  "name": "3M | Telegram Moderation and Publish",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": [
+          "message"
+        ],
+        "additionalFields": {}
+      },
+      "id": "c7c6f9e2-59d3-4ec1-ce6c-1d7e57c2b101",
+      "name": "Telegram moderation bot",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.2,
+      "position": [260, 300],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_WITH_N8N_TELEGRAM_CREDENTIAL_ID",
+          "name": "3M Moderation Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const message = $json.message || {};\nconst text = String(message.text || '').trim();\nconst chatId = message.chat?.id;\nconst match = text.match(/^\\/(approve|reject)\\s+(\\d+)\\s*$/i);\n\nreturn [{\n  json: {\n    action: match ? match[1].toLowerCase() : 'help',\n    candidate_id: match ? Number(match[2]) : null,\n    reply_chat_id: chatId\n  }\n}];"
+      },
+      "id": "c7c6f9e2-59d3-4ec1-ce6c-1d7e57c2b102",
+      "name": "Parse moderation command",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [500, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.action }}",
+              "operation": "equals",
+              "value2": "approve"
+            }
+          ]
+        }
+      },
+      "id": "c7c6f9e2-59d3-4ec1-ce6c-1d7e57c2b103",
+      "name": "Approve?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [740, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ 'SELECT id, draft_title, draft_text, source_url, status FROM content_candidates WHERE id = ' + Number($('Parse moderation command').item.json.candidate_id) + \" AND status = 'pending_review' LIMIT 1;\" }}",
+        "options": {}
+      },
+      "id": "c7c6f9e2-59d3-4ec1-ce6c-1d7e57c2b104",
+      "name": "Load pending candidate",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [980, 180],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_N8N_POSTGRES_CREDENTIAL_ID",
+          "name": "Agency PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://api.telegram.org/bot' + $env.TELEGRAM_BOT_TOKEN + '/sendMessage' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chat_id: $env.TELEGRAM_TARGET_CHANNEL_ID, text: $json.draft_title + '\\n\\n' + $json.draft_text + '\\n\\n' + $json.source_url, disable_web_page_preview: false }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "c7c6f9e2-59d3-4ec1-ce6c-1d7e57c2b105",
+      "name": "Publish to Telegram channel",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1220, 180]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ 'UPDATE content_candidates SET status = \'published\', published_at = NOW(), published_message_id = ' + Number($json.result?.message_id || 0) + ' WHERE id = ' + Number($('Parse moderation command').item.json.candidate_id) + ';' }}",
+        "options": {}
+      },
+      "id": "c7c6f9e2-59d3-4ec1-ce6c-1d7e57c2b106",
+      "name": "Mark candidate published",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1460, 180],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_N8N_POSTGRES_CREDENTIAL_ID",
+          "name": "Agency PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://api.telegram.org/bot' + $env.TELEGRAM_BOT_TOKEN + '/sendMessage' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chat_id: $('Parse moderation command').item.json.reply_chat_id, text: '✅ Кандидат #' + $('Parse moderation command').item.json.candidate_id + ' опубліковано.' }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "c7c6f9e2-59d3-4ec1-ce6c-1d7e57c2b107",
+      "name": "Confirm publication",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1700, 180]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.action }}",
+              "operation": "equals",
+              "value2": "reject"
+            }
+          ]
+        }
+      },
+      "id": "c7c6f9e2-59d3-4ec1-ce6c-1d7e57c2b108",
+      "name": "Reject?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [980, 420]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ 'UPDATE content_candidates SET status = \'rejected\' WHERE id = ' + Number($json.candidate_id) + \" AND status = 'pending_review';\" }}",
+        "options": {}
+      },
+      "id": "c7c6f9e2-59d3-4ec1-ce6c-1d7e57c2b109",
+      "name": "Reject candidate",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1220, 360],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_N8N_POSTGRES_CREDENTIAL_ID",
+          "name": "Agency PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://api.telegram.org/bot' + $env.TELEGRAM_BOT_TOKEN + '/sendMessage' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chat_id: $('Parse moderation command').item.json.reply_chat_id, text: '🗑 Кандидат #' + $('Parse moderation command').item.json.candidate_id + ' відхилено.' }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "c7c6f9e2-59d3-4ec1-ce6c-1d7e57c2b110",
+      "name": "Confirm rejection",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1460, 360]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://api.telegram.org/bot' + $env.TELEGRAM_BOT_TOKEN + '/sendMessage' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chat_id: $json.reply_chat_id, text: 'Команди модерації:\\n/approve ID — опублікувати\\n/reject ID — відхилити' }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "c7c6f9e2-59d3-4ec1-ce6c-1d7e57c2b111",
+      "name": "Show moderation help",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1220, 540]
+    }
+  ],
+  "connections": {
+    "Telegram moderation bot": {
+      "main": [
+        [
+          {
+            "node": "Parse moderation command",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse moderation command": {
+      "main": [
+        [
+          {
+            "node": "Approve?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Approve?": {
+      "main": [
+        [
+          {
+            "node": "Load pending candidate",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reject?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load pending candidate": {
+      "main": [
+        [
+          {
+            "node": "Publish to Telegram channel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Publish to Telegram channel": {
+      "main": [
+        [
+          {
+            "node": "Mark candidate published",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark candidate published": {
+      "main": [
+        [
+          {
+            "node": "Confirm publication",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reject?": {
+      "main": [
+        [
+          {
+            "node": "Reject candidate",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Show moderation help",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reject candidate": {
+      "main": [
+        [
+          {
+            "node": "Confirm rejection",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "c7c6f9e2-59d3-4ec1-ce6c-1d7e57c2b112",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": []
+}

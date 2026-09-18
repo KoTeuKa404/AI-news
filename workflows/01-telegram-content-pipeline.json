@@ -1,0 +1,215 @@
+{
+  "name": "3M | Telegram Content Intelligence | MVP",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 30
+            }
+          ]
+        }
+      },
+      "id": "b6b5f8d1-48c2-4db0-bd5b-0c6d46b1a001",
+      "name": "Every 30 minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [260, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.NEWS_FEED_URL_1 || 'https://hnrss.org/frontpage' }}"
+      },
+      "id": "b6b5f8d1-48c2-4db0-bd5b-0c6d46b1a002",
+      "name": "Read RSS source",
+      "type": "n8n-nodes-base.rssFeedRead",
+      "typeVersion": 1,
+      "position": [500, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $json;\nconst title = String(item.title || '').trim();\nconst url = String(item.link || item.guid || '').trim();\nconst text = String(item.contentSnippet || item.content || item.description || '').replace(/\\s+/g, ' ').trim();\n\nreturn [{\n  json: {\n    dedupe_key: url || title.toLowerCase(),\n    source: 'rss',\n    source_title: title,\n    source_url: url,\n    published_at: item.isoDate || item.pubDate || null,\n    source_text: text.slice(0, 12000)\n  }\n}];"
+      },
+      "id": "b6b5f8d1-48c2-4db0-bd5b-0c6d46b1a003",
+      "name": "Normalize source item",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [740, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AI_GATEWAY_BASE_URL + '/chat/completions' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.AI_GATEWAY_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "X-AI-Mode",
+              "value": "main"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $env.AI_MODEL || 'local-main', temperature: 0.2, messages: [{ role: 'system', content: 'You are a marketing-agency content intelligence editor. Return valid JSON only. Be conservative: reject noise, duplicates, unverifiable claims and items without clear value for the target Telegram audience. Channel style profile: ' + ($env.TELEGRAM_STYLE_PROFILE || 'Expert, concise and practical Telegram style.') }, { role: 'user', content: 'Analyze this source item and adapt it for a Telegram channel. Return exactly these keys: relevant (boolean), confidence (number 0..1), quality_score (number 0..1), reason (string), draft_title (string), draft_text (string), risks (array of strings), suggested_tags (array of strings). Preserve facts and include the source link in the draft. Source title: ' + $json.source_title + '\\nSource URL: ' + $json.source_url + '\\nPublished: ' + ($json.published_at || '') + '\\nSource text: ' + $json.source_text }] }) }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "b6b5f8d1-48c2-4db0-bd5b-0c6d46b1a004",
+      "name": "Analyze and adapt with Gateway",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1000, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $json.choices?.[0]?.message?.content || '{}';\nlet analysis;\ntry {\n  analysis = typeof raw === 'string' ? JSON.parse(raw) : raw;\n} catch (error) {\n  throw new Error('Gateway returned invalid JSON: ' + String(raw).slice(0, 500));\n}\n\nconst original = $('Normalize source item').item.json;\nreturn [{\n  json: {\n    ...original,\n    ...analysis,\n    ai_model: $json.model || $env.AI_MODEL || 'auto',\n    raw_analysis: analysis\n  }\n}];"
+      },
+      "id": "b6b5f8d1-48c2-4db0-bd5b-0c6d46b1a005",
+      "name": "Parse structured AI result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1240, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const relevant = $json.relevant === true;\nconst confidence = Number($json.confidence || 0);\nconst quality = Number($json.quality_score || 0);\n\nif (!relevant || confidence < 0.65 || quality < 0.65) {\n  return [];\n}\n\nconst escapeSql = (value) => String(value ?? '').replace(/'/g, \"''\");\nconst rawJson = JSON.stringify($json.raw_analysis || {}).replace(/'/g, \"''\");\nconst published = $json.published_at ? `'${escapeSql($json.published_at)}'` : 'NULL';\n\nconst sql = `INSERT INTO content_candidates (dedupe_key, source, source_title, source_url, published_at, relevant, confidence, quality_score, draft_title, draft_text, status, ai_model, raw_analysis) VALUES ('${escapeSql($json.dedupe_key)}', '${escapeSql($json.source)}', '${escapeSql($json.source_title)}', '${escapeSql($json.source_url)}', ${published}, TRUE, ${confidence}, ${quality}, '${escapeSql($json.draft_title)}', '${escapeSql($json.draft_text)}', 'pending_review', '${escapeSql($json.ai_model)}', '${rawJson}'::jsonb) ON CONFLICT (dedupe_key) DO NOTHING;`;\n\nconst telegramText = `📝 <b>Новий кандидат на публікацію</b>\\n\\n<b>${String($json.draft_title || '').replace(/[&<>]/g, '')}</b>\\n\\n${String($json.draft_text || '').replace(/[&<>]/g, '')}\\n\\n<b>Оцінки:</b> relevance ${confidence.toFixed(2)}, quality ${quality.toFixed(2)}\\n<b>Причина:</b> ${String($json.reason || '').replace(/[&<>]/g, '')}\\n\\n🔗 ${$json.source_url}`;\n\nreturn [{ json: { ...$json, sql, telegram_text: telegramText } }];"
+      },
+      "id": "b6b5f8d1-48c2-4db0-bd5b-0c6d46b1a006",
+      "name": "Keep quality candidates",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1480, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://api.telegram.org/bot' + $env.TELEGRAM_BOT_TOKEN + '/sendMessage' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chat_id: $env.TELEGRAM_REVIEW_CHAT_ID, text: $json.telegram_text, parse_mode: 'HTML', disable_web_page_preview: true }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "b6b5f8d1-48c2-4db0-bd5b-0c6d46b1a007",
+      "name": "Send to Telegram moderation",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1730, 180]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ $json.sql }}",
+        "options": {}
+      },
+      "id": "b6b5f8d1-48c2-4db0-bd5b-0c6d46b1a008",
+      "name": "Save candidate in PostgreSQL",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1730, 420],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_N8N_POSTGRES_CREDENTIAL_ID",
+          "name": "Agency PostgreSQL"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every 30 minutes": {
+      "main": [
+        [
+          {
+            "node": "Read RSS source",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read RSS source": {
+      "main": [
+        [
+          {
+            "node": "Normalize source item",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize source item": {
+      "main": [
+        [
+          {
+            "node": "Analyze and adapt with Gateway",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyze and adapt with Gateway": {
+      "main": [
+        [
+          {
+            "node": "Parse structured AI result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse structured AI result": {
+      "main": [
+        [
+          {
+            "node": "Keep quality candidates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Keep quality candidates": {
+      "main": [
+        [
+          {
+            "node": "Send to Telegram moderation",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Save candidate in PostgreSQL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "b6b5f8d1-48c2-4db0-bd5b-0c6d46b1a009",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": []
+}

@@ -1,0 +1,1902 @@
+{
+  "name": "3M | Telegram Moderation and Publish | ORM (READY)",
+  "id": "YetdvCehbBu3VN1z",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "seconds",
+              "secondsInterval": 5
+            }
+          ]
+        }
+      },
+      "id": "f2d2b0a0-0001-4c02-9001-000000000001",
+      "name": "Poll Telegram commands",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const state = $getWorkflowStaticData('global'); return [{ json: { offset: Number(state.telegram_update_offset || 0) } }];"
+      },
+      "id": "f2d2b0a0-0001-4c02-9001-000000000017",
+      "name": "Read Telegram offset",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ 'https://api.telegram.org/bot' + $env.TELEGRAM_BOT_TOKEN + '/getUpdates' }}",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "offset",
+              "value": "={{ $json.offset }}"
+            },
+            {
+              "name": "limit",
+              "value": "100"
+            },
+            {
+              "name": "timeout",
+              "value": "0"
+            },
+            {
+              "name": "allowed_updates",
+              "value": "={{ JSON.stringify(['message', 'callback_query']) }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "f2d2b0a0-0001-4c02-9001-000000000018",
+      "name": "Get Telegram updates",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const state = $getWorkflowStaticData('global'); const updates = Array.isArray($json.result) ? $json.result : []; const ids = updates.map((update) => Number(update.update_id)).filter(Number.isFinite); if (ids.length) state.telegram_update_offset = Math.max(...ids) + 1; return updates.flatMap((update) => { if (update.message?.text) return [{ json: { message: update.message, update_id: update.update_id, event_type: 'message' } }]; if (update.callback_query?.data) return [{ json: { message: update.callback_query.message, callback_query: update.callback_query, update_id: update.update_id, event_type: 'callback' } }]; return []; });"
+      },
+      "id": "f2d2b0a0-0001-4c02-9001-000000000019",
+      "name": "Expand Telegram updates",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const state = $getWorkflowStaticData('global');\nconst pendingEdits = state.telegram_pending_edits || {};\nconst callback = $json.callback_query || {};\nconst message = $json.message || callback.message || {};\nconst text = String(message.text || '').trim();\nconst callbackData = String(callback.data || '').trim();\nconst chatId = message.chat?.id;\nconst actorUserId = callback.from?.id || message.from?.id || null;\nconst notifyChatId = actorUserId || chatId;\nconst moderationCommand = text.match(/^\\/(approve|reject)\\s+(\\d+)(?:\\s+(.+))?\\s*$/i);\nconst callbackCommand = callbackData.match(/^(approve|reject|edit|regenerate):(\\d+)$/i);\nconst chatIdCommand = text.match(/^\\/(?:chatid|id)(?:@\\w+)?\\s*$/i);\nconst command = moderationCommand || callbackCommand;\nconst allowed = String($env.TELEGRAM_MODERATOR_IDS || '').split(',').map((value) => value.trim()).filter(Boolean);\nconst pending = actorUserId ? pendingEdits[String(actorUserId)] : null;\nlet action = command ? command[1].toLowerCase() : chatIdCommand ? 'chatid' : 'help';\nlet candidateId = command ? Number(command[2]) : null;\nlet editInstruction = '';\nif (!command && !chatIdCommand && pending && pending.expires_at > Date.now() && text) {\n  if (/^\\/cancel(?:@\\w+)?\\s*$/i.test(text)) {\n    action = 'edit_cancel';\n    candidateId = Number(pending.candidate_id);\n    delete pendingEdits[String(actorUserId)];\n  } else {\n    action = 'edit_submit';\n    candidateId = Number(pending.candidate_id);\n    editInstruction = text;\n    delete pendingEdits[String(actorUserId)];\n  }\n}\nif (action === 'edit' && allowed.includes(String(actorUserId))) {\n  pendingEdits[String(actorUserId)] = { candidate_id: candidateId, chat_id: chatId, moderation_message_id: message.message_id || null, expires_at: Date.now() + 15 * 60 * 1000 };\n}\nstate.telegram_pending_edits = pendingEdits;\nconst requiresAuth = ['approve', 'reject', 'edit', 'regenerate', 'edit_submit', 'edit_cancel'].includes(action);\nconst authorized = !requiresAuth || allowed.includes(String(actorUserId));\nreturn { json: { action, candidate_id: candidateId, reject_reason: moderationCommand?.[3] || 'інше', reply_chat_id: chatId, notify_chat_id: notifyChatId, actor_user_id: actorUserId, authorized, chat_type: message.chat?.type || '', chat_title: message.chat?.title || '', moderation_chat_id: pending?.chat_id || chatId, moderation_message_id: pending?.moderation_message_id || message.message_id || null, input_message_id: message.message_id || null, review_text: String(message.text || ''), edit_instruction: editInstruction, edit_valid: editInstruction.length > 0, event_type: $json.event_type || 'message', callback_query_id: callback.id || null } };"
+      },
+      "id": "f2d2b0a0-0001-4c02-9001-000000000002",
+      "name": "Parse moderation command",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "authorized-moderator",
+              "leftValue": "={{ String($json.authorized) }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "f2d2b0a0-0001-4c02-9001-000000000024",
+      "name": "Authorized moderator?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1320,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://api.telegram.org/bot' + $env.TELEGRAM_BOT_TOKEN + '/sendMessage' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chat_id: $json.reply_chat_id, text: '⛔ У вас немає дозволу на модерацію.' }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "f2d2b0a0-0001-4c02-9001-000000000025",
+      "name": "Unauthorized moderator",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1560,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "route-callback",
+              "leftValue": "={{ String($json.event_type || '') }}",
+              "rightValue": "callback",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "f2d2b0a0-0001-4c02-9001-000000000021",
+      "name": "Callback query?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1320,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://api.telegram.org/bot' + $env.TELEGRAM_BOT_TOKEN + '/answerCallbackQuery' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ callback_query_id: $json.callback_query_id, text: $json.action === 'approve' ? 'Публікацію запускаю…' : $json.action === 'reject' ? 'Кандидата відхиляю…' : $json.action === 'edit' ? 'Надішли новий заголовок і текст повідомлення.' : $json.action === 'regenerate' ? 'Перегенерую кандидата…' : 'Команда не розпізнана', show_alert: false }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "f2d2b0a0-0001-4c02-9001-000000000022",
+      "name": "Telegram: Answer button",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1560,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "return { json: $('Parse moderation command').item.json };"
+      },
+      "id": "f2d2b0a0-0001-4c02-9001-000000000023",
+      "name": "Restore moderation command",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1800,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "route-chatid",
+              "leftValue": "={{ String($json.action || '') }}",
+              "rightValue": "chatid",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "f2d2b0a0-0001-4c02-9001-000000000015",
+      "name": "Get chat ID?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1440,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://api.telegram.org/bot' + $env.TELEGRAM_BOT_TOKEN + '/sendMessage' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chat_id: $json.reply_chat_id, text: '🆔 ID цього чату: ' + $json.reply_chat_id + '\\nТип: ' + $json.chat_type + ($json.chat_title ? '\\nНазва: ' + $json.chat_title : '') + '\\n\\nЗбережи його як TELEGRAM_REVIEW_CHAT_ID.' }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "f2d2b0a0-0001-4c02-9001-000000000016",
+      "name": "Reply with chat ID",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        540
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "route-approve",
+              "leftValue": "={{ String($json.action || '') }}",
+              "rightValue": "approve",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "f2d2b0a0-0001-4c02-9001-000000000003",
+      "name": "Approve?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        960,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.CONTENT_STORE_BASE_URL || 'http://content-store:8080') + '/v1/candidates/' + $json.candidate_id + '/approve' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ moderator_id: $('Parse moderation command').item.json.actor_user_id }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "f2d2b0a0-0001-4c02-9001-000000000004",
+      "name": "ORM: Approve candidate",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "route-publish",
+              "leftValue": "={{ String($json.can_publish) }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "f2d2b0a0-0001-4c02-9001-000000000005",
+      "name": "Can publish?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1200,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://api.telegram.org/bot' + $env.TELEGRAM_BOT_TOKEN + '/sendMessage' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chat_id: $env.TELEGRAM_TARGET_CHANNEL_ID, text: $json.draft_title + '\\n\\n' + $json.draft_text + '\\n\\n' + $json.source_url, disable_web_page_preview: false }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "f2d2b0a0-0001-4c02-9001-000000000006",
+      "name": "Publish to Telegram channel",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 5000,
+      "position": [
+        1440,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const approved = $('ORM: Approve candidate').item.json;\nconst command = $('Parse moderation command').item.json;\nconst messageId = Number($json.result?.message_id || 0);\nconst telegramOk = $json.ok === true && messageId > 0;\nreturn { json: { candidate_id: approved.id, reply_chat_id: command.reply_chat_id, moderation_chat_id: command.moderation_chat_id, moderation_message_id: command.moderation_message_id, message_id: messageId, published_chat_id: Number($env.TELEGRAM_TARGET_CHANNEL_ID), telegram_ok: telegramOk, telegram_error: telegramOk ? '' : String($json.error?.message || $json.message || 'Telegram did not return a message_id') } };"
+      },
+      "id": "f2d2b0a0-0001-4c02-9001-000000000007",
+      "name": "Prepare publication result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "telegram-publish-ok",
+              "leftValue": "={{ String($json.telegram_ok) }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "f2d2b0a0-0001-4c02-9001-000000000026",
+      "name": "Telegram publish succeeded?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1920,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.CONTENT_STORE_BASE_URL || 'http://content-store:8080') + '/v1/candidates/' + $json.candidate_id + '/release' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ error: $json.telegram_error || 'Telegram publication failed' }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "f2d2b0a0-0001-4c02-9001-000000000027",
+      "name": "ORM: Release publication",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2160,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://api.telegram.org/bot' + $env.TELEGRAM_BOT_TOKEN + '/sendMessage' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chat_id: $('Parse moderation command').item.json.notify_chat_id, text: '⚠️ Кандидат #' + $('Parse moderation command').item.json.candidate_id + ' не опубліковано. Статус повернуто на pending_review.\\n\\n' + ($('Prepare publication result').item.json.telegram_error || 'Невідома помилка Telegram.') }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "f2d2b0a0-0001-4c02-9001-000000000028",
+      "name": "Notify publication failure",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2400,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.CONTENT_STORE_BASE_URL || 'http://content-store:8080') + '/v1/candidates/' + $json.candidate_id + '/publish' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ message_id: $json.message_id, chat_id: $json.published_chat_id }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "f2d2b0a0-0001-4c02-9001-000000000008",
+      "name": "ORM: Mark published",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "position": [
+        1920,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://api.telegram.org/bot' + $env.TELEGRAM_BOT_TOKEN + '/sendMessage' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chat_id: $('Parse moderation command').item.json.notify_chat_id, text: '✅ Кандидат #' + $('Parse moderation command').item.json.candidate_id + ' опубліковано.' }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "f2d2b0a0-0001-4c02-9001-000000000009",
+      "name": "Confirm publication",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2160,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://api.telegram.org/bot' + $env.TELEGRAM_BOT_TOKEN + '/editMessageText' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chat_id: $('Parse moderation command').item.json.moderation_chat_id, message_id: $('Parse moderation command').item.json.moderation_message_id, text: $('Parse moderation command').item.json.review_text + '\\n\\n✅ Опубліковано', disable_web_page_preview: true, reply_markup: { inline_keyboard: [] } }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "f2d2b0a0-0001-4c02-9001-000000000029",
+      "name": "Mark moderation message published",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2400,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://api.telegram.org/bot' + $env.TELEGRAM_BOT_TOKEN + '/sendMessage' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chat_id: $('Parse moderation command').item.json.notify_chat_id, text: 'ℹ️ Кандидат #' + $('Parse moderation command').item.json.candidate_id + ' вже оброблений. Поточний статус: ' + $json.status }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "f2d2b0a0-0001-4c02-9001-000000000010",
+      "name": "Explain already processed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1440,
+        60
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "route-reject",
+              "leftValue": "={{ String($json.action || '') }}",
+              "rightValue": "reject",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "f2d2b0a0-0001-4c02-9001-000000000011",
+      "name": "Reject?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        960,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.CONTENT_STORE_BASE_URL || 'http://content-store:8080') + '/v1/candidates/' + $json.candidate_id + '/reject' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ moderator_id: $('Parse moderation command').item.json.actor_user_id, reason: $('Parse moderation command').item.json.reject_reason || 'інше' }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "f2d2b0a0-0001-4c02-9001-000000000012",
+      "name": "ORM: Reject candidate",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1200,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://api.telegram.org/bot' + $env.TELEGRAM_BOT_TOKEN + '/sendMessage' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chat_id: $('Parse moderation command').item.json.notify_chat_id, text: '🗑 Кандидат #' + $('Parse moderation command').item.json.candidate_id + ' відхилено.' }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "f2d2b0a0-0001-4c02-9001-000000000013",
+      "name": "Confirm rejection",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1440,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://api.telegram.org/bot' + $env.TELEGRAM_BOT_TOKEN + '/editMessageText' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chat_id: $('Parse moderation command').item.json.moderation_chat_id, message_id: $('Parse moderation command').item.json.moderation_message_id, text: $('Parse moderation command').item.json.review_text + '\\n\\n❌ Відхилено: ' + ($('Parse moderation command').item.json.reject_reason || 'інше'), disable_web_page_preview: true, reply_markup: { inline_keyboard: [] } }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "f2d2b0a0-0001-4c02-9001-000000000030",
+      "name": "Mark moderation message rejected",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1680,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://api.telegram.org/bot' + $env.TELEGRAM_BOT_TOKEN + '/sendMessage' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chat_id: $json.notify_chat_id, text: 'Команди модерації:\\n/approve ID — опублікувати\\n/reject ID — відхилити' }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "f2d2b0a0-0001-4c02-9001-000000000014",
+      "name": "Show moderation help",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1200,
+        540
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "route-regenerate",
+              "leftValue": "={{ String($json.action || '') }}",
+              "rightValue": "regenerate",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "f2d2b0a0-0001-4c02-9001-000000000031",
+      "name": "Regenerate?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1200,
+        540
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ ($env.CONTENT_STORE_BASE_URL || 'http://content-store:8080') + '/v1/candidates/' + $json.candidate_id }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "f2d2b0a0-0001-4c02-9001-000000000032",
+      "name": "ORM: Get candidate for regeneration",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1440,
+        540
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "route-edit",
+              "leftValue": "={{ String($json.action || '') }}",
+              "rightValue": "edit",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "f2d2b0a0-0001-4c02-9d0a-5b1e4f750043",
+      "name": "Edit?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1440,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "route-edit-submit",
+              "leftValue": "={{ String($json.action || '') }}",
+              "rightValue": "edit_submit",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "f2d2b0a0-0001-4c02-9d0a-5b1e4f750044",
+      "name": "Edit submitted?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1680,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ ($env.CONTENT_STORE_BASE_URL || 'http://content-store:8080') + '/v1/candidates/' + $json.candidate_id }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "f2d2b0a0-0001-4c02-9d0a-5b1e4f750051",
+      "name": "ORM: Get candidate for edit",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1920,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const command = $('Parse moderation command').item.json;\nreturn { json: { ...$json, candidate_id: Number($json.id), edit_instruction: String(command.edit_instruction || '').trim(), moderation_chat_id: command.moderation_chat_id, moderation_message_id: command.moderation_message_id, input_message_id: command.input_message_id, notify_chat_id: command.notify_chat_id, actor_user_id: command.actor_user_id } };"
+      },
+      "id": "f2d2b0a0-0001-4c02-9d0a-5b1e4f750052",
+      "name": "Prepare edit input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2160,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ 'You are editing an existing Ukrainian Telegram moderation draft according to a moderator instruction. Return ONLY valid JSON with exactly these keys: relevant (boolean), confidence (number 0..1), quality_score (number 0..1), reason (non-empty string), draft_title (non-empty string), draft_text (non-empty string), risks (array of strings), suggested_tags (array of strings). Apply the instruction carefully while preserving facts supported by the source. Do not invent facts. Keep all human-readable values in Ukrainian. Do not put the source URL in draft_title or draft_text. Preserve official names such as NVIDIA, OpenAI, GitHub, CUDA, PostgreSQL and JavaScript. If the instruction is ambiguous, make a conservative useful improvement. Re-evaluate confidence and quality_score for this candidate; do not copy scores mechanically. Current title: ' + $json.draft_title + String.fromCharCode(10) + 'Current text: ' + $json.draft_text + String.fromCharCode(10) + 'Current reason: ' + ($json.reason || '') + String.fromCharCode(10) + 'Moderator instruction: ' + $json.edit_instruction + String.fromCharCode(10) + 'Source title: ' + $json.source_title + String.fromCharCode(10) + 'Source URL: ' + $json.source_url + String.fromCharCode(10) + 'Source text: ' + ($json.source_text || '') }}",
+        "hasOutputParser": false,
+        "needsFallback": false,
+        "batching": {
+          "batchSize": 1,
+          "delayBetweenBatches": 0
+        }
+      },
+      "id": "f2d2b0a0-0001-4c02-9d0a-5b1e4f750053",
+      "name": "AI: Apply edit instruction",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.4,
+      "position": [
+        2400,
+        560
+      ],
+      "credentials": {}
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "id",
+          "value": "local-main"
+        },
+        "responsesApiEnabled": false,
+        "options": {
+          "temperature": 0.35,
+          "maxTokens": 800,
+          "timeout": 300000,
+          "maxRetries": 1
+        }
+      },
+      "id": "f2d2b0a0-0001-4c02-9d0a-5b1e4f750054",
+      "name": "AI Model: Local-AI-Gateway MAIN (edit)",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        2400,
+        780
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "WkDuJfnR3zNyOH3w",
+          "name": "Local AI Gateway MAIN"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const raw = typeof $json.text === 'string' ? $json.text.trim() : JSON.stringify($json);\nlet analysis = null;\ntry { analysis = JSON.parse(raw); } catch {}\nconst original = $('Prepare edit input').item.json || {};\nconst isString = (value) => typeof value === 'string' && value.trim().length > 0;\nconst valid = !!analysis && typeof analysis === 'object' && !Array.isArray(analysis) && typeof analysis.relevant === 'boolean' && Number.isFinite(analysis.confidence) && analysis.confidence >= 0 && analysis.confidence <= 1 && Number.isFinite(analysis.quality_score) && analysis.quality_score >= 0 && analysis.quality_score <= 1 && isString(analysis.reason) && isString(analysis.draft_title) && isString(analysis.draft_text) && Array.isArray(analysis.risks) && analysis.risks.every(isString) && Array.isArray(analysis.suggested_tags) && analysis.suggested_tags.every(isString);\nconst value = analysis || { relevant: false, confidence: 0, quality_score: 0, reason: '', draft_title: '', draft_text: '', risks: [], suggested_tags: [] };\nconst humanText = [value.reason, value.draft_title, value.draft_text].join(' ');\nconst letters = humanText.match(/[A-Za-zА-Яа-яІіЇїЄєҐґ]/g) || [];\nconst cyrillic = humanText.match(/[А-Яа-яІіЇїЄєҐґ]/g) || [];\nconst language_ok = valid && letters.length > 0 && cyrillic.length / letters.length >= 0.45 && cyrillic.length >= 8;\nreturn { json: { ...original, ...value, edit_title: value.draft_title, edit_text: value.draft_text, candidate_id: original.candidate_id, valid, language_ok, validation_error: valid ? '' : 'Edited AI JSON structure is invalid', raw_ai_output: raw.slice(0, 20000), ai_model: 'local-main', raw_analysis: valid ? { ...value, edited_by_instruction: true } : {} } };"
+      },
+      "id": "f2d2b0a0-0001-4c02-9d0a-5b1e4f750055",
+      "name": "Parse edited AI",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2640,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "edited-ai-valid",
+              "leftValue": "={{ String($json.valid) }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "f2d2b0a0-0001-4c02-9d0a-5b1e4f750056",
+      "name": "Edited AI valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2880,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://api.telegram.org/bot' + $env.TELEGRAM_BOT_TOKEN + '/sendMessage' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chat_id: $json.notify_chat_id || $('Parse moderation command').item.json.notify_chat_id, text: '⚠️ Не вдалося застосувати правку кандидата #' + $('Parse moderation command').item.json.candidate_id + ': AI повернув некоректний результат.' }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "f2d2b0a0-0001-4c02-9d0a-5b1e4f750057",
+      "name": "Notify edit failure",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3120,
+        760
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "route-edit-cancel",
+              "leftValue": "={{ String($json.action || '') }}",
+              "rightValue": "edit_cancel",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "f2d2b0a0-0001-4c02-9d0a-5b1e4f750045",
+      "name": "Edit cancelled?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1920,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://api.telegram.org/bot' + $env.TELEGRAM_BOT_TOKEN + '/sendMessage' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chat_id: $json.reply_chat_id, text: ['✏️ Правка кандидата #' + $json.candidate_id, '', 'Напиши, що саме потрібно змінити.', 'Наприклад: зроби коротше, прибери непідтверджене твердження, додай технічні деталі або зміни тон на простіший.', '', '/cancel — скасувати правку.'].join(String.fromCharCode(10)), reply_markup: { force_reply: true, input_field_placeholder: 'Що саме змінити в тексті?' }, reply_parameters: $json.moderation_message_id ? { message_id: $json.moderation_message_id, allow_sending_without_reply: true } : undefined }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "f2d2b0a0-0001-4c02-9d0a-5b1e4f750046",
+      "name": "Telegram: Ask for edit",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1680,
+        620
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://api.telegram.org/bot' + $env.TELEGRAM_BOT_TOKEN + '/sendMessage' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chat_id: $json.reply_chat_id, text: 'Правку кандидата #' + $json.candidate_id + ' скасовано.' }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "f2d2b0a0-0001-4c02-9d0a-5b1e4f750047",
+      "name": "Telegram: Cancel edit",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2160,
+        780
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ ($env.CONTENT_STORE_BASE_URL || 'http://content-store:8080') + '/v1/candidates/' + $json.candidate_id + '/edit' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ title: String($json.edit_title || ''), text: String($json.edit_text || ''), moderator_id: Number($json.actor_user_id || 0) }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "f2d2b0a0-0001-4c02-9d0a-5b1e4f750048",
+      "name": "ORM: Save edited candidate",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1920,
+        620
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const command = $('Parse moderation command').item.json;\nconst confidence = Math.round(Number($json.confidence || 0) * 100);\nconst quality = Math.round(Number($json.quality_score || 0) * 100);\nconst candidateId = Number($json.id || command.candidate_id || 0);\nconst sourceUrl = String($json.source_url || '');\nconst telegramText = ['📝 Кандидат #' + candidateId, '', String($json.draft_title || '').trim(), '', String($json.draft_text || '').trim(), '', '📊 AI-оцінка', '🎯 Впевненість: ' + confidence + '%', '⭐ Якість: ' + quality + '%', '', '💡 Причина:', String($json.reason || '').trim(), '', '🔗 Джерело:', sourceUrl].join(String.fromCharCode(10));\nconst replyMarkup = { inline_keyboard: [[{ text: '✅ Опублікувати', callback_data: 'approve:' + candidateId }, { text: '✏️ Правка', callback_data: 'edit:' + candidateId }], [{ text: '🔄 Перегенерувати', callback_data: 'regenerate:' + candidateId }, { text: '❌ Відхилити', callback_data: 'reject:' + candidateId }], [{ text: '🔗 Відкрити джерело', url: sourceUrl }]] };\nreturn { json: { ...$json, candidate_id: candidateId, telegram_text: telegramText, reply_markup: replyMarkup, moderation_chat_id: command.moderation_chat_id, moderation_message_id: command.moderation_message_id, input_message_id: command.input_message_id, notify_chat_id: command.notify_chat_id } };"
+      },
+      "id": "f2d2b0a0-0001-4c02-9d0a-5b1e4f750049",
+      "name": "Prepare edited moderation card",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2160,
+        620
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://api.telegram.org/bot' + $env.TELEGRAM_BOT_TOKEN + '/editMessageText' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chat_id: $json.moderation_chat_id, message_id: $json.moderation_message_id, text: $json.telegram_text, disable_web_page_preview: true, reply_markup: $json.reply_markup }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "f2d2b0a0-0001-4c02-9d0a-5b1e4f750050",
+      "name": "Telegram: Update edited card",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2400,
+        620
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://api.telegram.org/bot' + $env.TELEGRAM_BOT_TOKEN + '/sendMessage' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+      "jsonBody": "={{ JSON.stringify({ chat_id: $('Prepare edited moderation card').item.json.notify_chat_id || $('Prepare edited moderation card').item.json.moderation_chat_id, text: '✏️ Правку застосовано до кандидата #' + $('Prepare edited moderation card').item.json.candidate_id + '.', disable_web_page_preview: true, reply_parameters: $('Prepare edited moderation card').item.json.input_message_id ? { message_id: $('Prepare edited moderation card').item.json.input_message_id, allow_sending_without_reply: true } : undefined }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "f2d2b0a0-0001-4c02-9d0a-5b1e4f750058",
+      "name": "Telegram: Reply edit confirmation",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2640,
+        620
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const commands = $('Parse moderation command').all();\nconst command = commands[$itemIndex]?.json || commands[0]?.json || {};\nconst articleText = String($json.source_text || '').trim();\nreturn { json: { ...$json, candidate_id: Number($json.id), article_text: articleText.slice(0, 12000), moderation_chat_id: command.moderation_chat_id, moderation_message_id: command.moderation_message_id, notify_chat_id: command.notify_chat_id, original_review_text: command.review_text, actor_user_id: command.actor_user_id } };"
+      },
+      "id": "f2d2b0a0-0001-4c02-9001-000000000033",
+      "name": "Prepare regeneration input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        540
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ 'You are regenerating a Telegram moderation candidate. Return ONLY valid JSON with exactly these keys: relevant (boolean), confidence (number 0..1), quality_score (number 0..1), reason (non-empty string), draft_title (non-empty string), draft_text (non-empty string), risks (array of strings), suggested_tags (array of strings). Every human-readable value MUST be Ukrainian (uk-UA). Create a genuinely fresh draft based only on the source; do not copy the previous draft mechanically. Do not invent facts. Do not put a source URL in draft_title or draft_text. Preserve official names such as NVIDIA, OpenAI, GitHub, CUDA, PostgreSQL and JavaScript. Score calibration: evaluate confidence and quality_score independently for this item, never copy scores from another item, use two decimal places in 0.01 increments, and do not use 0.95 or 0.90 as defaults. Confidence: 0.50-0.64 weak or ambiguous; 0.65-0.79 plausible with gaps; 0.80-0.89 strong evidence; 0.90-1.00 near-certain direct evidence. If relevant is false, confidence must be below 0.50. Quality: 0.50-0.64 poor or fragmentary; 0.65-0.79 usable but incomplete; 0.80-0.89 clear and useful; 0.90-1.00 exceptionally complete and precise. Source title: ' + $json.source_title + String.fromCharCode(10) + 'Source URL: ' + $json.source_url + String.fromCharCode(10) + 'Source text: ' + ($json.article_text || '') }}",
+        "hasOutputParser": false,
+        "needsFallback": false,
+        "batching": {
+          "batchSize": 1,
+          "delayBetweenBatches": 0
+        }
+      },
+      "id": "f2d2b0a0-0001-4c02-9001-000000000034",
+      "name": "AI: Regenerate candidate",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.4,
+      "position": [
+        1920,
+        540
+      ],
+      "credentials": {}
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "id",
+          "value": "local-main"
+        },
+        "responsesApiEnabled": false,
+        "options": {
+          "temperature": 0.35,
+          "maxTokens": 800,
+          "timeout": 300000,
+          "maxRetries": 1
+        }
+      },
+      "id": "f2d2b0a0-0001-4c02-9001-000000000035",
+      "name": "AI Model: Local-AI-Gateway MAIN (regenerate)",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        1920,
+        760
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "WkDuJfnR3zNyOH3w",
+          "name": "Local AI Gateway MAIN"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const raw = typeof $json.text === 'string' ? $json.text.trim() : JSON.stringify($json);\nlet analysis = null;\ntry { analysis = JSON.parse(raw); } catch {}\nconst originals = $('Prepare regeneration input').all();\nconst original = originals[$itemIndex]?.json || originals[0]?.json || {};\nconst isString = (value) => typeof value === 'string' && value.trim().length > 0;\nconst valid = !!analysis && typeof analysis === 'object' && !Array.isArray(analysis) && typeof analysis.relevant === 'boolean' && Number.isFinite(analysis.confidence) && analysis.confidence >= 0 && analysis.confidence <= 1 && Number.isFinite(analysis.quality_score) && analysis.quality_score >= 0 && analysis.quality_score <= 1 && isString(analysis.reason) && isString(analysis.draft_title) && isString(analysis.draft_text) && Array.isArray(analysis.risks) && analysis.risks.every(isString) && Array.isArray(analysis.suggested_tags) && analysis.suggested_tags.every(isString);\nconst value = analysis || { relevant: false, confidence: 0, quality_score: 0, reason: '', draft_title: '', draft_text: '', risks: [], suggested_tags: [] };\nconst humanText = [value.reason, value.draft_title, value.draft_text].join(' ');\nconst letters = humanText.match(/[A-Za-zА-Яа-яІіЇїЄєҐґ]/g) || [];\nconst cyrillic = humanText.match(/[А-Яа-яІіЇїЄєҐґ]/g) || [];\nconst language_ok = valid && letters.length > 0 && cyrillic.length / letters.length >= 0.45 && cyrillic.length >= 8;\nreturn { json: { ...original, ...value, candidate_id: original.candidate_id, valid, language_ok, validation_error: valid ? '' : 'Regenerated AI JSON structure is invalid', raw_ai_output: raw.slice(0, 20000), ai_model: 'local-main', raw_analysis: valid ? { ...value, regenerated: true } : {} } };"
+      },
+      "id": "f2d2b0a0-0001-4c02-9001-000000000036",
+      "name": "Parse regenerated AI",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2160,
+        540
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "regenerated-valid",
+              "leftValue": "={{ String($json.valid) }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "f2d2b0a0-0001-4c02-9001-000000000037",
+      "name": "Regenerated AI valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2400,
+        540
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ ($env.CONTENT_STORE_BASE_URL || 'http://content-store:8080') + '/v1/candidates/' + $json.candidate_id + '/analysis' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ regenerate: true, relevant: $json.relevant === true, confidence: Number($json.confidence || 0), quality_score: Number($json.quality_score || 0), draft_title: String($json.draft_title || ''), draft_text: String($json.draft_text || ''), reason: String($json.reason || ''), risks: Array.isArray($json.risks) ? $json.risks : [], suggested_tags: Array.isArray($json.suggested_tags) ? $json.suggested_tags : [], language_ok: $json.language_ok === true, ai_model: $json.ai_model || 'local-main', raw_analysis: $json.raw_analysis || {} }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "f2d2b0a0-0001-4c02-9001-000000000038",
+      "name": "ORM: Save regenerated candidate",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2640,
+        540
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "regenerated-accepted",
+              "leftValue": "={{ String($json.accepted) }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "f2d2b0a0-0001-4c02-9001-000000000039",
+      "name": "Regeneration accepted?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2880,
+        540
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const originals = $('Parse regenerated AI').all();\nconst ai = originals[$itemIndex]?.json || originals[0]?.json || $json;\nconst commands = $('Parse moderation command').all();\nconst command = commands[$itemIndex]?.json || commands[0]?.json || {};\nconst confidence = Math.round(Number(ai.confidence || 0) * 100);\nconst quality = Math.round(Number(ai.quality_score || 0) * 100);\nconst candidateId = Number(ai.candidate_id || $json.id || 0);\nconst sourceUrl = String(ai.source_url || '');\nconst telegram_text = ['📝 Кандидат #' + candidateId, '', String(ai.draft_title || '').trim(), '', String(ai.draft_text || '').trim(), '', '📊 AI-оцінка', '🎯 Впевненість: ' + confidence + '%', '⭐ Якість: ' + quality + '%', '', '💡 Причина:', String(ai.reason || '').trim(), '', '🔗 Джерело:', sourceUrl].join('\\n');\nconst reply_markup = { inline_keyboard: [[{ text: '✅ Опублікувати', callback_data: 'approve:' + candidateId }, { text: '✏️ Правка', callback_data: 'edit:' + candidateId }], [{ text: '🔄 Перегенерувати', callback_data: 'regenerate:' + candidateId }, { text: '❌ Відхилити', callback_data: 'reject:' + candidateId }], [{ text: '🔗 Відкрити джерело', url: sourceUrl }]] };\nreturn { json: { ...ai, ...$json, candidate_id: candidateId, telegram_text, reply_markup, moderation_chat_id: command.moderation_chat_id, moderation_message_id: command.moderation_message_id } };"
+      },
+      "id": "f2d2b0a0-0001-4c02-9001-000000000040",
+      "name": "Prepare regenerated moderation card",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3120,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://api.telegram.org/bot' + $env.TELEGRAM_BOT_TOKEN + '/editMessageText' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chat_id: $json.moderation_chat_id, message_id: $json.moderation_message_id, text: $json.telegram_text, disable_web_page_preview: true, reply_markup: $json.reply_markup }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "f2d2b0a0-0001-4c02-9001-000000000041",
+      "name": "Telegram: Update regenerated card",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3360,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://api.telegram.org/bot' + $env.TELEGRAM_BOT_TOKEN + '/sendMessage' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chat_id: $json.notify_chat_id || $('Parse moderation command').item.json.notify_chat_id, text: '⚠️ Не вдалося перегенерувати кандидата #' + $('Parse moderation command').item.json.candidate_id + ': AI повернув некоректний результат.' }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "f2d2b0a0-0001-4c02-9001-000000000042",
+      "name": "Notify regeneration failure",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3120,
+        660
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://api.telegram.org/bot' + $env.TELEGRAM_BOT_TOKEN + '/sendMessage' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chat_id: $json.notify_chat_id || $('Parse moderation command').item.json.notify_chat_id, text: 'ℹ️ Кандидат #' + $('Parse moderation command').item.json.candidate_id + ' після перегенерації не пройшов Quality Gate.' }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "f2d2b0a0-0001-4c02-9001-000000000043",
+      "name": "Notify regeneration filtered",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3120,
+        780
+      ]
+    }
+  ],
+  "connections": {
+    "Poll Telegram commands": {
+      "main": [
+        [
+          {
+            "node": "Read Telegram offset",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Telegram offset": {
+      "main": [
+        [
+          {
+            "node": "Get Telegram updates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Telegram updates": {
+      "main": [
+        [
+          {
+            "node": "Expand Telegram updates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Expand Telegram updates": {
+      "main": [
+        [
+          {
+            "node": "Parse moderation command",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse moderation command": {
+      "main": [
+        [
+          {
+            "node": "Authorized moderator?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Authorized moderator?": {
+      "main": [
+        [
+          {
+            "node": "Callback query?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Unauthorized moderator",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Callback query?": {
+      "main": [
+        [
+          {
+            "node": "Telegram: Answer button",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Get chat ID?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram: Answer button": {
+      "main": [
+        [
+          {
+            "node": "Restore moderation command",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Restore moderation command": {
+      "main": [
+        [
+          {
+            "node": "Get chat ID?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get chat ID?": {
+      "main": [
+        [
+          {
+            "node": "Reply with chat ID",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Approve?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Approve?": {
+      "main": [
+        [
+          {
+            "node": "ORM: Approve candidate",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reject?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ORM: Approve candidate": {
+      "main": [
+        [
+          {
+            "node": "Can publish?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Can publish?": {
+      "main": [
+        [
+          {
+            "node": "Publish to Telegram channel",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Explain already processed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Publish to Telegram channel": {
+      "main": [
+        [
+          {
+            "node": "Prepare publication result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare publication result": {
+      "main": [
+        [
+          {
+            "node": "Telegram publish succeeded?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram publish succeeded?": {
+      "main": [
+        [
+          {
+            "node": "ORM: Mark published",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "ORM: Release publication",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ORM: Release publication": {
+      "main": [
+        [
+          {
+            "node": "Notify publication failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ORM: Mark published": {
+      "main": [
+        [
+          {
+            "node": "Confirm publication",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Confirm publication": {
+      "main": [
+        [
+          {
+            "node": "Mark moderation message published",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reject?": {
+      "main": [
+        [
+          {
+            "node": "ORM: Reject candidate",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Regenerate?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ORM: Reject candidate": {
+      "main": [
+        [
+          {
+            "node": "Confirm rejection",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Confirm rejection": {
+      "main": [
+        [
+          {
+            "node": "Mark moderation message rejected",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Regenerate?": {
+      "main": [
+        [
+          {
+            "node": "ORM: Get candidate for regeneration",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Edit?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit?": {
+      "main": [
+        [
+          {
+            "node": "Telegram: Ask for edit",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Edit submitted?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit submitted?": {
+      "main": [
+        [
+          {
+            "node": "ORM: Get candidate for edit",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Edit cancelled?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ORM: Get candidate for edit": {
+      "main": [
+        [
+          {
+            "node": "Prepare edit input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare edit input": {
+      "main": [
+        [
+          {
+            "node": "AI: Apply edit instruction",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI: Apply edit instruction": {
+      "main": [
+        [
+          {
+            "node": "Parse edited AI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse edited AI": {
+      "main": [
+        [
+          {
+            "node": "Edited AI valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edited AI valid?": {
+      "main": [
+        [
+          {
+            "node": "ORM: Save edited candidate",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Notify edit failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit cancelled?": {
+      "main": [
+        [
+          {
+            "node": "Telegram: Cancel edit",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Show moderation help",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ORM: Save edited candidate": {
+      "main": [
+        [
+          {
+            "node": "Prepare edited moderation card",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare edited moderation card": {
+      "main": [
+        [
+          {
+            "node": "Telegram: Update edited card",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram: Update edited card": {
+      "main": [
+        [
+          {
+            "node": "Telegram: Reply edit confirmation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ORM: Get candidate for regeneration": {
+      "main": [
+        [
+          {
+            "node": "Prepare regeneration input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare regeneration input": {
+      "main": [
+        [
+          {
+            "node": "AI: Regenerate candidate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI: Regenerate candidate": {
+      "main": [
+        [
+          {
+            "node": "Parse regenerated AI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse regenerated AI": {
+      "main": [
+        [
+          {
+            "node": "Regenerated AI valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Regenerated AI valid?": {
+      "main": [
+        [
+          {
+            "node": "ORM: Save regenerated candidate",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Notify regeneration failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ORM: Save regenerated candidate": {
+      "main": [
+        [
+          {
+            "node": "Regeneration accepted?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Regeneration accepted?": {
+      "main": [
+        [
+          {
+            "node": "Prepare regenerated moderation card",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Notify regeneration filtered",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare regenerated moderation card": {
+      "main": [
+        [
+          {
+            "node": "Telegram: Update regenerated card",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Model: Local-AI-Gateway MAIN (regenerate)": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI: Regenerate candidate",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Model: Local-AI-Gateway MAIN (edit)": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI: Apply edit instruction",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "versionId": "a6b7c8d9-3e42-4c75-5d6f-b1f0e9d39456",
+  "versionCounter": 7,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": true,
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}
