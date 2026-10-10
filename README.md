@@ -43,10 +43,7 @@ External draft ──▶ n8n client review webhook
 
 | File | Description |
 | --- | --- |
-| `workflows/01-telegram-content-pipeline-orm.json` | RSS ingestion, article processing, AI analysis and moderation delivery |
 | `workflows/02-telegram-moderation-publish-orm.json` | Approve, reject, edit, release and publish operations |
-| `workflows/03-client-review-agent.json` | Predicts likely client edits for a draft received through a webhook |
-| `workflows/01-telegram-content-pipeline.json` | Older SQL-based version of the content workflow |
 | `workflows/02-telegram-moderation-publish.json` | Older SQL-based version of the moderation workflow |
 
 The ORM workflows use the `content-store` API instead of connecting to PostgreSQL directly from n8n.
@@ -98,7 +95,7 @@ PowerShell:
 Copy-Item .env.example .env
 ```
 
-Set the values for the database, AI Gateway and Telegram bot in `.env`. At minimum, configure:
+Set the values configure:
 
 ```dotenv
 POSTGRES_PASSWORD=
@@ -109,8 +106,6 @@ TELEGRAM_REVIEW_CHAT_ID=
 TELEGRAM_TARGET_CHANNEL_ID=
 TELEGRAM_MODERATOR_IDS=
 ```
-
-Do not commit `.env`.
 
 ### 2. Start the services
 
@@ -128,43 +123,10 @@ Local endpoints:
 
 ### 3. Configure n8n
 
-Import the required JSON files from `workflows/` and attach credentials to the nodes that call the AI Gateway and Telegram Bot API.
+Import the required JSON files from `workflows/` and attach credentials to the nodes that call the AI API and Telegram Bot API.
 
-The main AI node uses the `Local AI Gateway MAIN` credential. The client review workflow is separate from the RSS content workflow and is inactive until it is explicitly enabled.
+The main AI node uses the `AI API` credential. The client review workflow is separate from the RSS content workflow and is inactive until it is explicitly enabled.
 
-## Client review webhook
-
-The `03-client-review-agent.json` workflow accepts a draft and a stable client ID. The request body is:
-
-```json
-{
-  "client_id": "telegram-default",
-  "title": "New developer tool",
-  "text": "A short draft to review.",
-  "candidate_id": 123
-}
-```
-
-The workflow loads the client context from:
-
-```text
-GET /v1/clients/{client_id}/style-context
-```
-
-The response contains a risk level, confidence score, likely edits, risk flags and a short summary:
-
-```json
-{
-  "ok": true,
-  "client_id": "telegram-default",
-  "candidate_id": 123,
-  "risk_level": "low",
-  "confidence": 0.62,
-  "likely_edits": [],
-  "risk_flags": [],
-  "summary": "No strong pattern was found in the available history."
-}
-```
 
 ## content-store API
 
@@ -193,14 +155,14 @@ Interactive OpenAPI documentation is available at `http://localhost:18090/docs` 
 The available settings are documented in `.env.example`. Important groups include:
 
 - database connection settings;
-- AI Gateway URL, key and model;
+- AI API URL, key and model;
 - content-store quality thresholds;
 - source fetch timeout, response size and host allowlist;
 - processing retry limits;
 - Telegram IDs and moderation settings;
 - timezone and RSS feed URL.
 
-The Docker setup uses `host.docker.internal` to access an AI Gateway running on the host machine. Change `AI_GATEWAY_BASE_URL` if the gateway runs elsewhere.
+The Docker setup uses `host.docker.internal` to access an AI API running on the host machine. Change `AI_GATEWAY_BASE_URL` if the gateway runs elsewhere.
 
 ## Security and failure handling
 
