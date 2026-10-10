@@ -20,13 +20,13 @@ The LLM is one step in the workflow. Candidate state, deduplication, validation,
 ```text
 RSS feeds ──▶ n8n content workflow ──▶ content-store ──▶ PostgreSQL
                                       │
-                                      ├─▶ Local AI Gateway
+                                      ├─▶ AI API
                                       └─▶ Telegram Bot API
 
 External draft ──▶ n8n client review webhook
                          │
                          ├─▶ content-store style context
-                         └─▶ Local AI Gateway
+                         └─▶ AI API
 ```
 
 ### Services
@@ -36,7 +36,7 @@ External draft ──▶ n8n client review webhook
 | n8n | Schedules, webhooks, workflow execution and integrations |
 | `content-store` | FastAPI service for candidates, source fetching, moderation and history |
 | PostgreSQL | Candidate data, deduplication, state transitions and moderation events |
-| Local AI Gateway | OpenAI-compatible endpoint used by the n8n AI nodes |
+| AI API | OpenAI-compatible endpoint used by the n8n AI nodes |
 | Telegram Bot API | Review messages and channel publishing |
 
 ## Workflows
